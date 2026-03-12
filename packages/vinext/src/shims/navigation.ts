@@ -291,7 +291,8 @@ function getServerSearchParamsSnapshot(): ReadonlyURLSearchParams {
 // Track client-side params (set during RSC hydration/navigation)
 // We cache the params object for referential stability — only create a new
 // object when the params actually change (shallow key/value comparison).
-let _clientParams: Record<string, string | string[]> = {};
+const _EMPTY_PARAMS: Record<string, string | string[]> = {};
+let _clientParams: Record<string, string | string[]> = _EMPTY_PARAMS;
 let _clientParamsJson = "{}";
 
 export function setClientParams(params: Record<string, string | string[]>): void {
@@ -299,12 +300,29 @@ export function setClientParams(params: Record<string, string | string[]>): void
   if (json !== _clientParamsJson) {
     _clientParams = params;
     _clientParamsJson = json;
+    // Notify useSyncExternalStore subscribers so useParams() re-renders.
+    notifyListeners();
   }
 }
 
 /** Get the current client params (for testing referential stability). */
 export function getClientParams(): Record<string, string | string[]> {
   return _clientParams;
+}
+
+function getClientParamsSnapshot(): Record<string, string | string[]> {
+  return _clientParams;
+}
+
+function getServerParamsSnapshot(): Record<string, string | string[]> {
+  return _getServerContext()?.params ?? _EMPTY_PARAMS;
+}
+
+function subscribeToNavigation(cb: () => void): () => void {
+  _listeners.add(cb);
+  return () => {
+    _listeners.delete(cb);
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -323,12 +341,7 @@ export function usePathname(): string {
   }
   // Client-side: use the hook system for reactivity
   return React.useSyncExternalStore(
-    (cb: () => void) => {
-      _listeners.add(cb);
-      return () => {
-        _listeners.delete(cb);
-      };
-    },
+    subscribeToNavigation,
     getPathnameSnapshot,
     () => _getServerContext()?.pathname ?? "/",
   );
@@ -344,12 +357,7 @@ export function useSearchParams(): ReadonlyURLSearchParams {
     return getServerSearchParamsSnapshot();
   }
   return React.useSyncExternalStore(
-    (cb: () => void) => {
-      _listeners.add(cb);
-      return () => {
-        _listeners.delete(cb);
-      };
-    },
+    subscribeToNavigation,
     getSearchParamsSnapshot,
     getServerSearchParamsSnapshot,
   );
@@ -363,9 +371,13 @@ export function useParams<
 >(): T {
   if (isServer) {
     // During SSR of "use client" components, the navigation context may not be set.
-    return (_getServerContext()?.params ?? {}) as T;
+    return (_getServerContext()?.params ?? _EMPTY_PARAMS) as T;
   }
-  return _clientParams as T;
+  return React.useSyncExternalStore(
+    subscribeToNavigation,
+    getClientParamsSnapshot as () => T,
+    getServerParamsSnapshot as () => T,
+  );
 }
 
 /**
